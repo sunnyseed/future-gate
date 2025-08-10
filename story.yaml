@@ -1,0 +1,46 @@
+story:
+  start:
+    text: "你站在**未来之门**前。门上刻着 `A` 与 `B` 两个符号，你可以选择其一。"
+    options:
+      - label: "A 门：踏入实验舱"
+        next: lab
+      - label: "B 门：迈向荒漠"
+        next: desert
+  lab:
+    text: "你来到洁白的实验舱。墙上浮现提示：是否**启动 AI 辅助**来推演未来？"
+    options:
+      - label: "启动 AI 辅助"
+        next: ai
+      - label: "返回门厅"
+        next: start
+  ai:
+    text: "AI 正在汇总传感器与档案数据，尝试预测多条时间线。它给出两种策略建议："
+    ai_assist: true
+    options:
+      - label: "采纳『乐观方案』"
+        next: end_good
+      - label: "采纳『谨慎方案』"
+        next: end_neutral
+  desert:
+    text: "门外是炽热的荒漠。远处似有绿洲与驿站旗影。"
+    options:
+      - label: "追寻绿洲"
+        next: oasis
+      - label: "返回门厅"
+        next: start
+  oasis:
+    text: "你发现一片清澈绿洲，旅人围火而坐，星空如洗。"
+    options:
+      - label: "在此定居"
+        next: end_oasis
+      - label: "返回门厅"
+        next: start
+  end_good:
+    text: "【结局】你与团队共创新纪元，未来之门向更多人开启。"
+    end: true
+  end_neutral:
+    text: "【结局】你谨慎前行，稳步积累，未来尚待书写。"
+    end: true
+  end_oasis:
+    text: "【结局】你在绿洲建立聚落，与旅人共享繁星与清泉。"
+    end: true
