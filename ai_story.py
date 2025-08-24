@@ -1,0 +1,384 @@
+# -*- coding: utf-8 -*-
+"""
+AI 写故事模块（仅保留：动态故事模式）
+"""
+
+from typing import Tuple, List, Optional
+import streamlit as st
+
+from utils import (
+    beijing_date_str, build_novel_messages, generate_chat,
+    build_dynamic_roles_messages, build_dynamic_question_messages,
+    parse_dynamic_response, STORY_BACKGROUND,
+    QUESTION_MODEL_OPTIONS, write_log, generate_chat_stream,
+)
+
+def page_dynamic_story_mode():
+    """动态生成问题和选项的AI写故事模式"""
+    
+    # 初始化状态
+    if "session_id" not in st.session_state:
+        st.session_state.session_id = str(int(__import__("time").time()))
+    if "dynamic_role" not in st.session_state:
+        st.session_state.dynamic_role = None
+    if "dynamic_picks" not in st.session_state:
+        st.session_state.dynamic_picks = []
+    if "dynamic_questions" not in st.session_state:
+        st.session_state.dynamic_questions = []  # (question, true_opt, false_opt)
+    if "dynamic_novel_text" not in st.session_state:
+        st.session_state.dynamic_novel_text = None
+    if "dynamic_roles_list" not in st.session_state:
+        st.session_state.dynamic_roles_list = []
+    if "dynamic_early_end" not in st.session_state:
+        st.session_state.dynamic_early_end = False
+    
+    # 调试信息：显示初始化状态
+    st.write(f"初始化状态 - 提前结束: {st.session_state.dynamic_early_end}")
+    
+    # 状态同步检查：确保picks和questions长度一致
+    if len(st.session_state.dynamic_picks) > len(st.session_state.dynamic_questions):
+        # 如果picks比questions多，说明状态不同步，重置picks
+        st.session_state.dynamic_picks = st.session_state.dynamic_picks[:len(st.session_state.dynamic_questions)]
+
+    # 可编辑的故事背景
+    if "custom_background" not in st.session_state:
+        st.session_state.custom_background = STORY_BACKGROUND
+    
+    st.markdown("### 🎭 故事设定与模型")
+    st.caption("修改背景，并选择用于出题的模型。")
+    
+    col_bg, col_model = st.columns([3, 2])
+    with col_bg:
+        custom_bg = st.text_area(
+            "故事背景：",
+            value=st.session_state.custom_background,
+            height=120,
+            placeholder="描述你想要的未来世界背景...",
+            key="background_editor"
+        )
+    with col_model:
+        if "question_model" not in st.session_state:
+            st.session_state.question_model = "openai/gpt-5-chat"
+        # 选择用于动态问题生成的模型
+        selected = st.selectbox(
+            "问题生成模型",
+            QUESTION_MODEL_OPTIONS,
+            index=QUESTION_MODEL_OPTIONS.index(st.session_state.question_model)
+            if st.session_state.question_model in QUESTION_MODEL_OPTIONS else 1,
+        )
+        st.session_state.question_model = selected
+    
+    # 保存修改后的背景
+    if custom_bg != st.session_state.custom_background:
+        st.session_state.custom_background = custom_bg
+        st.success("✅ 故事背景已更新！")
+    
+    # 显示当前使用的背景（写作规则不在页面展示）
+    st.markdown(f"> 🪐 **当前故事背景**：{st.session_state.custom_background}")
+    
+    # 调试信息：显示当前状态
+    st.write("🔍 调试信息：")
+    st.write(f"- 角色: {st.session_state.get('dynamic_role', 'None')}")
+    st.write(f"- 选择数量: {len(st.session_state.get('dynamic_picks', []))}")
+    st.write(f"- 问题数量: {len(st.session_state.get('dynamic_questions', []))}")
+    st.write(f"- 提前结束: {st.session_state.get('dynamic_early_end', False)}")
+    
+    if st.session_state.get("dynamic_early_end"):
+        st.info("🏁 当前状态：已选择提前结束")
+    
+    # 第0层：动态生成角色
+    if not st.session_state.dynamic_role:
+        st.markdown("---")
+        st.subheader("第 0 层：生成角色")
+        
+        if not st.session_state.dynamic_roles_list:
+            if st.button("🎲 生成角色选项", use_container_width=True):
+                with st.spinner("正在生成角色..."):
+                    try:
+                        background_text = st.session_state.custom_background
+                        messages = build_dynamic_roles_messages(background_text, beijing_date_str())
+                        response = generate_chat(messages, st.session_state.question_model, temperature=0.8)
+                        roles = [role.strip() for role in response.strip().split('\n') if role.strip()]
+                        if len(roles) >= 4:
+                            st.session_state.dynamic_roles_list = roles[:4]
+                            write_log("roles_generated", {"roles": st.session_state.dynamic_roles_list}, st.session_state.session_id)
+                        else:
+                            st.error("角色生成失败，请重试")
+                    except Exception as e:
+                        st.error(f"生成失败：{e}")
+                        write_log("roles_generate_error", {"error": str(e)}, st.session_state.session_id)
+                st.rerun()
+        else:
+            st.write("请选择你的身份：")
+            role = st.radio(
+                "角色选择：",
+                options=st.session_state.dynamic_roles_list,
+                horizontal=True,
+                key="dynamic_role_radio",
+            )
+            if st.button("进入世界之门 →", use_container_width=True):
+                st.session_state.dynamic_role = role
+                write_log("role_chosen", {"role": role}, st.session_state.session_id)
+                st.rerun()
+        return
+
+    # 中间状态：显示路径
+    picks = st.session_state.dynamic_picks
+    depth = len(picks)
+    if depth > 0:
+        st.markdown("---")
+        path_str = "".join("T" if x else "F" for x in picks)
+        st.markdown(f"**当前路径：** `{path_str}`")
+        
+        # 显示之前的抉择
+        if st.session_state.dynamic_questions:
+            st.markdown("**之前的抉择：**")
+            for i, (q, t_opt, f_opt) in enumerate(st.session_state.dynamic_questions):
+                if i < len(picks):  # 确保索引安全
+                    choice = picks[i]
+                    st.write(f"第{i+1}层：{q}")
+                    st.write(f"选择：**{t_opt if choice else f_opt}**")
+                else:
+                    st.write(f"第{i+1}层：{q} (尚未选择)")
+
+    # 继续生成问题
+    if depth < 5:
+        st.markdown("---")
+        st.subheader(f"第 {depth + 1} 层")
+        
+        # 如果还没有当前层的问题，自动生成一个（除非已选择提前结束）
+        if depth >= len(st.session_state.dynamic_questions) and not st.session_state.dynamic_early_end:
+            with st.spinner("正在生成问题..."):
+                try:
+                    # 构建之前的抉择历史
+                    previous_choices = []
+                    for i, (q, t_opt, f_opt) in enumerate(st.session_state.dynamic_questions):
+                        if i < len(picks):  # 确保索引安全
+                            choice = picks[i]
+                            previous_choices.append((q, t_opt if choice else f_opt))
+                        else:
+                            # 如果还没有选择，跳过这个问题
+                            continue
+
+                    background_text = st.session_state.custom_background
+                    messages = build_dynamic_question_messages(
+                        background_text,
+                        st.session_state.dynamic_role,
+                        depth + 1,
+                        previous_choices,
+                        beijing_date_str()
+                    )
+                    response = generate_chat(messages, st.session_state.question_model, temperature=0.8)
+                    question, true_opt, false_opt = parse_dynamic_response(response)
+
+                    if question and true_opt and false_opt:
+                        st.session_state.dynamic_questions.append((question, true_opt, false_opt))
+                        write_log("question_generated", {"depth": depth + 1, "q": question, "T": true_opt, "F": false_opt, "model": st.session_state.question_model}, st.session_state.session_id)
+                        st.rerun()
+                    else:
+                        st.error("问题生成失败，请点击重试。")
+                except Exception as e:
+                    st.error(f"生成失败：{e}")
+                    write_log("question_generate_error", {"depth": depth + 1, "error": str(e)}, st.session_state.session_id)
+            if st.button("重试生成问题", use_container_width=True, key=f"retry_gen_{depth}"):
+                write_log("question_retry", {"depth": depth + 1}, st.session_state.session_id)
+                st.rerun()
+            return
+            # 注意：这里不return，让代码继续执行到完成状态判断
+        
+        # 显示当前层的问题
+        if depth < len(st.session_state.dynamic_questions):
+            q, true_opt, false_opt = st.session_state.dynamic_questions[depth]
+            st.write(q)
+            
+            choice = st.radio(
+                "选择：",
+                options=[True, False],
+                index=0,
+                format_func=lambda x: true_opt if x else false_opt,
+                horizontal=True,
+                key=f"dynamic_choice_{depth}",
+            )
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                if st.button("下一步 →", use_container_width=True):
+                    st.session_state.dynamic_picks.append(bool(choice))
+                    st.session_state.dynamic_novel_text = None
+                    write_log("choice_next", {"depth": depth + 1, "choice": bool(choice)}, st.session_state.session_id)
+                    st.rerun()
+            with col3:
+                if st.button("← 上一步", use_container_width=True, disabled=(len(picks) == 0)):
+                    if picks:
+                        picks.pop()
+                    st.session_state.dynamic_novel_text = None
+                    write_log("choice_back", {"depth": depth, "picks_len": len(picks)}, st.session_state.session_id)
+                    st.rerun()
+            with col4:
+                if st.button("🏁 结束选择", use_container_width=True, type="secondary", key=f"end_early_choice_{depth}"):
+                    # 标记为提前结束
+                    st.session_state.dynamic_early_end = True
+                    st.write("正在结束选择...")  # 调试信息
+                    write_log("early_end", {"depth": depth, "path": "".join("T" if x else "F" for x in picks)}, st.session_state.session_id)
+                    st.rerun()
+            with col2:
+                if st.button("换一个问题", use_container_width=True):
+                    # 重新生成当前层的问题（不清空历史选择）
+                    with st.spinner("正在重新生成本题..."):
+                        try:
+                            # 已完成的抉择历史（到上一题为止）
+                            previous_choices = []
+                            for i, (pq, pt, pf) in enumerate(st.session_state.dynamic_questions[:depth]):
+                                if i < len(picks):
+                                    choice = picks[i]
+                                    previous_choices.append((pq, pt if choice else pf))
+
+                            background_text = st.session_state.custom_background
+                            messages = build_dynamic_question_messages(
+                                background_text,
+                                st.session_state.dynamic_role,
+                                depth + 1,
+                                previous_choices,
+                                beijing_date_str()
+                            )
+                            response = generate_chat(messages, st.session_state.question_model, temperature=0.8)
+                            question, true_opt, false_opt = parse_dynamic_response(response)
+                            if question and true_opt and false_opt:
+                                # 替换当前层的问题
+                                st.session_state.dynamic_questions[depth] = (question, true_opt, false_opt)
+                                write_log("question_regenerated", {"depth": depth + 1, "q": question, "T": true_opt, "F": false_opt, "model": st.session_state.question_model}, st.session_state.session_id)
+                                st.rerun()
+                            else:
+                                st.error("重生成失败，请重试。")
+                        except Exception as e:
+                            st.error(f"重生成失败：{e}")
+                            write_log("question_regenerate_error", {"depth": depth + 1, "error": str(e)}, st.session_state.session_id)
+            # 注意：这里不return，让代码继续执行到完成状态判断
+        # 如果当前层有问题但还没有选择，等待用户选择
+        # 注意：这里不return，让代码继续执行到完成状态判断
+
+    # 完成状态：走满5层或提前结束
+    if depth == 5 or st.session_state.dynamic_early_end:  # 完成5个选择或提前结束
+        st.markdown("---")
+        if depth == 5:
+            st.subheader("🎉 完成所有决策！")
+        else:
+            st.subheader("🏁 提前结束选择")
+        
+        # 调试信息
+        st.write(f"深度: {depth}, 提前结束: {st.session_state.dynamic_early_end}")
+        st.write(f"条件判断: depth == 5 ({depth == 5}) OR early_end ({st.session_state.dynamic_early_end}) = {depth == 5 or st.session_state.dynamic_early_end}")
+        
+        path_str = "".join("T" if x else "F" for x in picks)
+        st.markdown(f"**最终路径：** `{path_str}`")
+        
+        # 显示所有抉择
+        st.markdown("**你的抉择历程：**")
+        for i, (q, t_opt, f_opt) in enumerate(st.session_state.dynamic_questions):
+            if i < len(picks):  # 确保索引安全
+                choice = picks[i]
+                st.write(f"第{i+1}层：{q}")
+                st.write(f"选择：**{t_opt if choice else f_opt}**")
+            else:
+                st.write(f"第{i+1}层：{q} (尚未选择)")
+
+        st.markdown("### 短篇小说")
+        st.caption("根据故事背景、你的角色选择、以及这条世界线的五个决策结果实时生成。")
+        
+        colA, colB = st.columns(2)
+        with colA:
+            style = st.radio("小说风格", ["诙谐幽默", "黑暗惊悚"], horizontal=True, key="dynamic_novel_style")
+        with colB:
+            default_model = st.session_state.get("question_model")
+            default_index = (
+                QUESTION_MODEL_OPTIONS.index(default_model)
+                if default_model in QUESTION_MODEL_OPTIONS else 0
+            )
+            model = st.selectbox(
+                "模型（OpenRouter）",
+                QUESTION_MODEL_OPTIONS,
+                index=default_index,
+                key="dynamic_model",
+            )
+
+        generated_now = False
+        if st.button("✨ 生成短篇", use_container_width=True):
+            try:
+                # 构建抉择摘要
+                decisions = []
+                for i, (q, t_opt, f_opt) in enumerate(st.session_state.dynamic_questions):
+                    if i < len(picks):  # 确保索引安全
+                        choice = picks[i]
+                        decisions.append((q, t_opt if choice else f_opt))
+                    else:
+                        # 如果还没有选择，跳过这个问题
+                        continue
+                
+                background_text = st.session_state.custom_background
+                messages = build_novel_messages(
+                    background=background_text,
+                    role=st.session_state.dynamic_role or "一位路人",
+                    path_str=path_str,
+                    decisions=decisions,
+                    date_cn=beijing_date_str(),
+                    style=style,
+                )
+                # 写入提示词日志
+                write_log(
+                    "novel_prompt",
+                    {
+                        "model": model,
+                        "style": style,
+                        "path": path_str,
+                        "messages": messages,
+                    },
+                    st.session_state.session_id,
+                )
+                # 流式渲染
+                placeholder = st.empty()
+                acc = []
+                for chunk in generate_chat_stream(messages, model=model, temperature=0.9 if style == "诙谐幽默" else 0.8):
+                    acc.append(chunk)
+                    placeholder.write("".join(acc))
+                text = "".join(acc)
+                st.session_state.dynamic_novel_text = text
+                # 写入完整文本日志
+                write_log(
+                    "novel_response",
+                    {
+                        "model": model,
+                        "style": style,
+                        "path": path_str,
+                        "text": text,
+                    },
+                    st.session_state.session_id,
+                )
+                write_log("novel_generated", {"model": model, "style": style, "path": path_str, "len": len(text or "")}, st.session_state.session_id)
+                generated_now = True
+            except Exception as e:
+                st.error(f"生成失败：{e}")
+                write_log("novel_generate_error", {"model": model, "error": str(e)}, st.session_state.session_id)
+
+        if st.session_state.dynamic_novel_text and not generated_now:
+            st.markdown("#### 生成结果")
+            st.write(st.session_state.dynamic_novel_text)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("← 回到上一步", use_container_width=True, key="dynamic_back"):
+                if picks:
+                    picks.pop()
+                st.session_state.dynamic_novel_text = None
+                # 如果回到上一步，取消提前结束状态
+                if st.session_state.dynamic_early_end:
+                    st.session_state.dynamic_early_end = False
+                st.rerun()
+        with col2:
+            if st.button("重新开始", use_container_width=True, key="dynamic_reset"):
+                st.session_state.dynamic_picks = []
+                st.session_state.dynamic_questions = []
+                st.session_state.dynamic_novel_text = None
+                st.session_state.dynamic_role = None
+                st.session_state.dynamic_early_end = False
+                st.session_state.custom_background = STORY_BACKGROUND  # 重置为默认背景
+                st.rerun()
