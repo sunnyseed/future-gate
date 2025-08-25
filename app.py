@@ -24,8 +24,8 @@ def main():
 
     mode = st.segmented_control(
         "选择模式：",
-        options=["提问 CUHKSZ", "AI 写故事动态版"],
-        default="AI 写故事动态版",
+        options=["提问 CUHKSZ", "Ai 故事机"],
+        default="Ai 故事机",
     )
 
     if mode == "提问 CUHKSZ":

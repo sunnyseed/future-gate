@@ -11,7 +11,30 @@ from utils import (
     build_dynamic_roles_messages, build_dynamic_question_messages,
     parse_dynamic_response, STORY_BACKGROUND,
     QUESTION_MODEL_OPTIONS, write_log, generate_chat_stream,
+    random_background_text, build_outline_messages,
 )
+
+# 基于 URL 查询参数的调试开关（?debug=1/true/yes/on）
+def _is_debug_enabled() -> bool:
+    try:
+        # Streamlit >= 1.30: st.query_params 存在
+        qp = st.query_params  # type: ignore[attr-defined]
+        v = qp.get("debug", None)
+    except Exception:
+        # 兼容旧接口（以防未来回退）
+        try:
+            qp = st.experimental_get_query_params()
+            v = qp.get("debug")
+        except Exception:
+            v = None
+    if v is None:
+        return False
+    if isinstance(v, list):
+        v = v[0] if v else None
+    if v is None:
+        return False
+    v = str(v).lower()
+    return v in ("1", "true", "yes", "on")
 
 def page_dynamic_story_mode():
     """动态生成问题和选项的AI写故事模式"""
@@ -27,13 +50,16 @@ def page_dynamic_story_mode():
         st.session_state.dynamic_questions = []  # (question, true_opt, false_opt)
     if "dynamic_novel_text" not in st.session_state:
         st.session_state.dynamic_novel_text = None
+    if "dynamic_outline_text" not in st.session_state:
+        st.session_state.dynamic_outline_text = None
     if "dynamic_roles_list" not in st.session_state:
         st.session_state.dynamic_roles_list = []
     if "dynamic_early_end" not in st.session_state:
         st.session_state.dynamic_early_end = False
     
     # 调试信息：显示初始化状态
-    st.write(f"初始化状态 - 提前结束: {st.session_state.dynamic_early_end}")
+    if _is_debug_enabled():
+        st.write(f"初始化状态 - 提前结束: {st.session_state.dynamic_early_end}")
     
     # 状态同步检查：确保picks和questions长度一致
     if len(st.session_state.dynamic_picks) > len(st.session_state.dynamic_questions):
@@ -45,7 +71,7 @@ def page_dynamic_story_mode():
         st.session_state.custom_background = STORY_BACKGROUND
     
     st.markdown("### 🎭 故事设定与模型")
-    st.caption("修改背景，并选择用于出题的模型。")
+    st.caption("修改背景，或一键随机生成；并选择用于出题的模型。")
     
     col_bg, col_model = st.columns([3, 2])
     with col_bg:
@@ -56,6 +82,19 @@ def page_dynamic_story_mode():
             placeholder="描述你想要的未来世界背景...",
             key="background_editor"
         )
+        c1, c2 = st.columns([1,1])
+        with c1:
+            if st.button("🎲 随机生成背景", use_container_width=True):
+                combo = random_background_text()
+                # 合并到背景顶部，便于修改
+                st.session_state.custom_background = combo
+                write_log("background_randomized", {"combo": combo}, st.session_state.session_id)
+                st.rerun()
+        with c2:
+            if st.button("重置为默认", use_container_width=True):
+                st.session_state.custom_background = STORY_BACKGROUND
+                write_log("background_reset_default", None, st.session_state.session_id)
+                st.rerun()
     with col_model:
         if "question_model" not in st.session_state:
             st.session_state.question_model = "openai/gpt-5-chat"
@@ -77,11 +116,12 @@ def page_dynamic_story_mode():
     st.markdown(f"> 🪐 **当前故事背景**：{st.session_state.custom_background}")
     
     # 调试信息：显示当前状态
-    st.write("🔍 调试信息：")
-    st.write(f"- 角色: {st.session_state.get('dynamic_role', 'None')}")
-    st.write(f"- 选择数量: {len(st.session_state.get('dynamic_picks', []))}")
-    st.write(f"- 问题数量: {len(st.session_state.get('dynamic_questions', []))}")
-    st.write(f"- 提前结束: {st.session_state.get('dynamic_early_end', False)}")
+    if _is_debug_enabled():
+        st.write("🔍 调试信息：")
+        st.write(f"- 角色: {st.session_state.get('dynamic_role', 'None')}")
+        st.write(f"- 选择数量: {len(st.session_state.get('dynamic_picks', []))}")
+        st.write(f"- 问题数量: {len(st.session_state.get('dynamic_questions', []))}")
+        st.write(f"- 提前结束: {st.session_state.get('dynamic_early_end', False)}")
     
     if st.session_state.get("dynamic_early_end"):
         st.info("🏁 当前状态：已选择提前结束")
@@ -127,8 +167,6 @@ def page_dynamic_story_mode():
     depth = len(picks)
     if depth > 0:
         st.markdown("---")
-        path_str = "".join("T" if x else "F" for x in picks)
-        st.markdown(f"**当前路径：** `{path_str}`")
         
         # 显示之前的抉择
         if st.session_state.dynamic_questions:
@@ -141,8 +179,8 @@ def page_dynamic_story_mode():
                 else:
                     st.write(f"第{i+1}层：{q} (尚未选择)")
 
-    # 继续生成问题
-    if depth < 5:
+    # 继续生成问题（最多 3 层）
+    if depth < 3:
         st.markdown("---")
         st.subheader(f"第 {depth + 1} 层")
         
@@ -218,7 +256,8 @@ def page_dynamic_story_mode():
                 if st.button("🏁 结束选择", use_container_width=True, type="secondary", key=f"end_early_choice_{depth}"):
                     # 标记为提前结束
                     st.session_state.dynamic_early_end = True
-                    st.write("正在结束选择...")  # 调试信息
+                    if _is_debug_enabled():
+                        st.write("正在结束选择...")  # 调试信息
                     write_log("early_end", {"depth": depth, "path": "".join("T" if x else "F" for x in picks)}, st.session_state.session_id)
                     st.rerun()
             with col2:
@@ -257,37 +296,39 @@ def page_dynamic_story_mode():
         # 如果当前层有问题但还没有选择，等待用户选择
         # 注意：这里不return，让代码继续执行到完成状态判断
 
-    # 完成状态：走满5层或提前结束
-    if depth == 5 or st.session_state.dynamic_early_end:  # 完成5个选择或提前结束
+    # 完成状态：走满3层或提前结束
+    if depth == 3 or st.session_state.dynamic_early_end:  # 完成3个选择或提前结束
         st.markdown("---")
-        if depth == 5:
+        if depth == 3:
             st.subheader("🎉 完成所有决策！")
         else:
             st.subheader("🏁 提前结束选择")
-        
-        # 调试信息
-        st.write(f"深度: {depth}, 提前结束: {st.session_state.dynamic_early_end}")
-        st.write(f"条件判断: depth == 5 ({depth == 5}) OR early_end ({st.session_state.dynamic_early_end}) = {depth == 5 or st.session_state.dynamic_early_end}")
-        
-        path_str = "".join("T" if x else "F" for x in picks)
-        st.markdown(f"**最终路径：** `{path_str}`")
-        
-        # 显示所有抉择
-        st.markdown("**你的抉择历程：**")
-        for i, (q, t_opt, f_opt) in enumerate(st.session_state.dynamic_questions):
-            if i < len(picks):  # 确保索引安全
-                choice = picks[i]
-                st.write(f"第{i+1}层：{q}")
-                st.write(f"选择：**{t_opt if choice else f_opt}**")
-            else:
-                st.write(f"第{i+1}层：{q} (尚未选择)")
 
-        st.markdown("### 短篇小说")
-        st.caption("根据故事背景、你的角色选择、以及这条世界线的五个决策结果实时生成。")
-        
+        # 调试信息
+        if _is_debug_enabled():
+            st.write(f"深度: {depth}, 提前结束: {st.session_state.dynamic_early_end}")
+            st.write(f"条件判断: depth == 3 ({depth == 3}) OR early_end ({st.session_state.dynamic_early_end}) = {depth == 3 or st.session_state.dynamic_early_end}")
+
+            path_str = "".join("T" if x else "F" for x in picks)
+            st.markdown(f"**最终路径：** `{path_str}`")
+
+            # 显示所有抉择
+            st.markdown("**你的抉择历程：**")
+            for i, (q, t_opt, f_opt) in enumerate(st.session_state.dynamic_questions):
+                if i < len(picks):  # 确保索引安全
+                    choice = picks[i]
+                    st.write(f"第{i+1}层：{q}")
+                    st.write(f"选择：**{t_opt if choice else f_opt}**")
+                else:
+                    st.write(f"第{i+1}层：{q} (尚未选择)")
+
+        # 大纲与小说生成
+        st.markdown("### 大纲与短篇小说")
+        st.caption("先生成故事大纲（中英双语），再据此创作中文短篇小说。")
+
         colA, colB = st.columns(2)
         with colA:
-            style = st.radio("小说风格", ["诙谐幽默", "黑暗惊悚"], horizontal=True, key="dynamic_novel_style")
+            style = st.radio("小说风格", ["经典文体", "黑暗惊悚"], horizontal=True, key="dynamic_novel_style")
         with colB:
             default_model = st.session_state.get("question_model")
             default_index = (
@@ -301,62 +342,82 @@ def page_dynamic_story_mode():
                 key="dynamic_model",
             )
 
-        generated_now = False
-        if st.button("✨ 生成短篇", use_container_width=True):
+        # 步骤1：生成大纲
+        outline_generated_now = False  # 避免同一轮渲染重复展示
+        if st.button("📝 生成故事大纲", use_container_width=True):
             try:
-                # 构建抉择摘要
                 decisions = []
                 for i, (q, t_opt, f_opt) in enumerate(st.session_state.dynamic_questions):
-                    if i < len(picks):  # 确保索引安全
+                    if i < len(picks):
                         choice = picks[i]
                         decisions.append((q, t_opt if choice else f_opt))
-                    else:
-                        # 如果还没有选择，跳过这个问题
-                        continue
-                
                 background_text = st.session_state.custom_background
-                messages = build_novel_messages(
+                outline_messages = build_outline_messages(
                     background=background_text,
                     role=st.session_state.dynamic_role or "一位路人",
-                    path_str=path_str,
                     decisions=decisions,
                     date_cn=beijing_date_str(),
-                    style=style,
                 )
-                # 写入提示词日志
                 write_log(
-                    "novel_prompt",
-                    {
-                        "model": model,
-                        "style": style,
-                        "path": path_str,
-                        "messages": messages,
-                    },
+                    "outline_prompt",
+                    {"model": model, "path": path_str, "messages": outline_messages},
                     st.session_state.session_id,
                 )
-                # 流式渲染
                 placeholder = st.empty()
                 acc = []
-                for chunk in generate_chat_stream(messages, model=model, temperature=0.9 if style == "诙谐幽默" else 0.8):
+                for chunk in generate_chat_stream(outline_messages, model=model, temperature=0.6):
                     acc.append(chunk)
                     placeholder.write("".join(acc))
-                text = "".join(acc)
-                st.session_state.dynamic_novel_text = text
-                # 写入完整文本日志
+                outline_text = "".join(acc)
+                st.session_state.dynamic_outline_text = outline_text
                 write_log(
-                    "novel_response",
-                    {
-                        "model": model,
-                        "style": style,
-                        "path": path_str,
-                        "text": text,
-                    },
+                    "outline_response",
+                    {"model": model, "path": path_str, "text": outline_text},
                     st.session_state.session_id,
                 )
-                write_log("novel_generated", {"model": model, "style": style, "path": path_str, "len": len(text or "")}, st.session_state.session_id)
-                generated_now = True
+                write_log("outline_generated", {"model": model, "path": path_str, "len": len(outline_text or "")}, st.session_state.session_id)
+                outline_generated_now = True
             except Exception as e:
-                st.error(f"生成失败：{e}")
+                st.error(f"大纲生成失败：{e}")
+                write_log("outline_generate_error", {"model": model, "error": str(e)}, st.session_state.session_id)
+
+        # 展示大纲
+        if st.session_state.dynamic_outline_text and not outline_generated_now:
+            st.markdown("#### 故事大纲（中英）")
+            st.write(st.session_state.dynamic_outline_text)
+
+        # 步骤2：基于大纲生成短篇
+        generated_now = False
+        if st.button("✨ 基于大纲生成短篇", use_container_width=True, disabled=not st.session_state.dynamic_outline_text):
+            try:
+                if not st.session_state.dynamic_outline_text:
+                    st.warning("请先生成大纲")
+                else:
+                    novel_messages = build_novel_messages(
+                        outline_text=st.session_state.dynamic_outline_text,
+                        style=style,
+                    )
+                    write_log(
+                        "novel_prompt",
+                        {"model": model, "style": style, "path": path_str, "messages": novel_messages},
+                        st.session_state.session_id,
+                    )
+                    placeholder = st.empty()
+                    acc = []
+                    for chunk in generate_chat_stream(novel_messages, model=model, temperature=0.9 if style == "诙谐幽默" else 0.8):
+                        acc.append(chunk)
+                        placeholder.write("".join(acc))
+                    text = "".join(acc)
+                    st.session_state.dynamic_novel_text = text
+                    write_log(
+                        "novel_response",
+                        {"model": model, "style": style, "path": path_str, "text": text},
+                        st.session_state.session_id,
+                    )
+                    write_log("novel_generated", {"model": model, "style": style, "path": path_str, "len": len(text or "")}, st.session_state.session_id)
+                    generated_now = True
+            except Exception as e:
+                st.error(f"短篇生成失败：{e}")
                 write_log("novel_generate_error", {"model": model, "error": str(e)}, st.session_state.session_id)
 
         if st.session_state.dynamic_novel_text and not generated_now:
@@ -378,6 +439,7 @@ def page_dynamic_story_mode():
                 st.session_state.dynamic_picks = []
                 st.session_state.dynamic_questions = []
                 st.session_state.dynamic_novel_text = None
+                st.session_state.dynamic_outline_text = None
                 st.session_state.dynamic_role = None
                 st.session_state.dynamic_early_end = False
                 st.session_state.custom_background = STORY_BACKGROUND  # 重置为默认背景
