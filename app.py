@@ -14,7 +14,7 @@ from ai_story import page_dynamic_story_mode
 from cuhksz_mode import page_cuhksz_mode
 
 # ========== 页面设置 ==========
-st.set_page_config(page_title="未来之门 - Life 3.0", page_icon="🚪", layout="wide")
+st.set_page_config(page_title="未来之门 - Life 3.0", page_icon="🚪", layout="wide", initial_sidebar_state="collapsed")
 
 
 # ========== 首页：模式选择 ==========

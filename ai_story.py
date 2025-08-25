@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 AI 写故事模块（仅保留：动态故事模式）
+通过 URL 添加 ?debug=1 开启调试
 """
 
 from typing import Tuple, List, Optional
@@ -57,6 +58,39 @@ def page_dynamic_story_mode():
     if "dynamic_early_end" not in st.session_state:
         st.session_state.dynamic_early_end = False
     
+    # 侧边栏：模型与风格设置（默认折叠）
+    with st.sidebar:
+        st.markdown("### 设置")
+        # 出题模型
+        if "question_model" not in st.session_state:
+            st.session_state.question_model = "openai/gpt-5-chat"
+        st.session_state.question_model = st.selectbox(
+            "问题生成模型",
+            QUESTION_MODEL_OPTIONS,
+            index=QUESTION_MODEL_OPTIONS.index(st.session_state.question_model) if st.session_state.question_model in QUESTION_MODEL_OPTIONS else 0,
+            key="sidebar_question_model",
+        )
+
+        # 大纲/短篇生成模型
+        if "gen_model" not in st.session_state:
+            st.session_state.gen_model = st.session_state.question_model
+        st.session_state.gen_model = st.selectbox(
+            "大纲/短篇生成模型",
+            QUESTION_MODEL_OPTIONS,
+            index=QUESTION_MODEL_OPTIONS.index(st.session_state.gen_model) if st.session_state.gen_model in QUESTION_MODEL_OPTIONS else 0,
+            key="sidebar_gen_model",
+        )
+
+        # 小说风格
+        if "dynamic_novel_style" not in st.session_state:
+            st.session_state.dynamic_novel_style = "经典文体"
+        st.session_state.dynamic_novel_style = st.radio(
+            "小说风格",
+            ["经典文体", "黑暗惊悚"],
+            horizontal=False,
+            key="sidebar_novel_style",
+        )
+    
     # 调试信息：显示初始化状态
     if _is_debug_enabled():
         st.write(f"初始化状态 - 提前结束: {st.session_state.dynamic_early_end}")
@@ -70,50 +104,34 @@ def page_dynamic_story_mode():
     if "custom_background" not in st.session_state:
         st.session_state.custom_background = STORY_BACKGROUND
     
-    st.markdown("### 🎭 故事设定与模型")
-    st.caption("修改背景，或一键随机生成；并选择用于出题的模型。")
-    
-    col_bg, col_model = st.columns([3, 2])
-    with col_bg:
-        custom_bg = st.text_area(
-            "故事背景：",
-            value=st.session_state.custom_background,
-            height=120,
-            placeholder="描述你想要的未来世界背景...",
-            key="background_editor"
-        )
-        c1, c2 = st.columns([1,1])
-        with c1:
-            if st.button("🎲 随机生成背景", use_container_width=True):
-                combo = random_background_text()
-                # 合并到背景顶部，便于修改
-                st.session_state.custom_background = combo
-                write_log("background_randomized", {"combo": combo}, st.session_state.session_id)
-                st.rerun()
-        with c2:
-            if st.button("重置为默认", use_container_width=True):
-                st.session_state.custom_background = STORY_BACKGROUND
-                write_log("background_reset_default", None, st.session_state.session_id)
-                st.rerun()
-    with col_model:
-        if "question_model" not in st.session_state:
-            st.session_state.question_model = "openai/gpt-5-chat"
-        # 选择用于动态问题生成的模型
-        selected = st.selectbox(
-            "问题生成模型",
-            QUESTION_MODEL_OPTIONS,
-            index=QUESTION_MODEL_OPTIONS.index(st.session_state.question_model)
-            if st.session_state.question_model in QUESTION_MODEL_OPTIONS else 1,
-        )
-        st.session_state.question_model = selected
-    
+    st.markdown("### 🎭 通过 5 次选择，生成独一无二的故事")
+    # 显示当前使用的背景
+    custom_bg = st.text_area(
+        "故事背景：",
+        value=st.session_state.custom_background,
+        height=160,
+        placeholder="描述你想要的未来世界背景...",
+        key="background_editor",
+        disabled=not _is_debug_enabled(),
+    )
+
+    if _is_debug_enabled():
+        st.caption("调试模式：可直接修改背景文本；或点击下方按钮随机生成（侧边栏可选择模型）。")
+    else:
+        st.caption("请点击下方按钮随机生成背景。")
+    if st.button("🎲 随机生成背景", use_container_width=True):
+        combo = random_background_text()
+        # 合并到背景顶部，便于修改
+        st.session_state.custom_background = combo
+        write_log("background_randomized", {"combo": combo}, st.session_state.session_id)
+        st.rerun()
+
     # 保存修改后的背景
-    if custom_bg != st.session_state.custom_background:
+    if _is_debug_enabled() and custom_bg != st.session_state.custom_background:
         st.session_state.custom_background = custom_bg
         st.success("✅ 故事背景已更新！")
     
-    # 显示当前使用的背景（写作规则不在页面展示）
-    st.markdown(f"> 🪐 **当前故事背景**：{st.session_state.custom_background}")
+
     
     # 调试信息：显示当前状态
     if _is_debug_enabled():
@@ -300,16 +318,17 @@ def page_dynamic_story_mode():
     if depth == 3 or st.session_state.dynamic_early_end:  # 完成3个选择或提前结束
         st.markdown("---")
         if depth == 3:
-            st.subheader("🎉 完成所有决策！")
+            st.subheader("🎉 已完成所有决策")
         else:
             st.subheader("🏁 提前结束选择")
+
+        # 计算路径字符串（用于日志与显示）
+        path_str = "".join("T" if x else "F" for x in picks)
 
         # 调试信息
         if _is_debug_enabled():
             st.write(f"深度: {depth}, 提前结束: {st.session_state.dynamic_early_end}")
             st.write(f"条件判断: depth == 3 ({depth == 3}) OR early_end ({st.session_state.dynamic_early_end}) = {depth == 3 or st.session_state.dynamic_early_end}")
-
-            path_str = "".join("T" if x else "F" for x in picks)
             st.markdown(f"**最终路径：** `{path_str}`")
 
             # 显示所有抉择
@@ -323,24 +342,12 @@ def page_dynamic_story_mode():
                     st.write(f"第{i+1}层：{q} (尚未选择)")
 
         # 大纲与小说生成
-        st.markdown("### 大纲与短篇小说")
-        st.caption("先生成故事大纲（中英双语），再据此创作中文短篇小说。")
+        st.markdown("### 创作故事")
+        st.caption("先有故事大纲，再据此创作中文短篇小说。")
 
-        colA, colB = st.columns(2)
-        with colA:
-            style = st.radio("小说风格", ["经典文体", "黑暗惊悚"], horizontal=True, key="dynamic_novel_style")
-        with colB:
-            default_model = st.session_state.get("question_model")
-            default_index = (
-                QUESTION_MODEL_OPTIONS.index(default_model)
-                if default_model in QUESTION_MODEL_OPTIONS else 0
-            )
-            model = st.selectbox(
-                "模型（OpenRouter）",
-                QUESTION_MODEL_OPTIONS,
-                index=default_index,
-                key="dynamic_model",
-            )
+        # 使用侧边栏设置
+        style = st.session_state.dynamic_novel_style
+        model = st.session_state.gen_model
 
         # 步骤1：生成大纲
         outline_generated_now = False  # 避免同一轮渲染重复展示
@@ -424,17 +431,32 @@ def page_dynamic_story_mode():
             st.markdown("#### 生成结果")
             st.write(st.session_state.dynamic_novel_text)
 
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("← 回到上一步", use_container_width=True, key="dynamic_back"):
-                if picks:
-                    picks.pop()
-                st.session_state.dynamic_novel_text = None
-                # 如果回到上一步，取消提前结束状态
-                if st.session_state.dynamic_early_end:
-                    st.session_state.dynamic_early_end = False
-                st.rerun()
-        with col2:
+        # 下载/回退/重置
+        col_dl, col_rerun = st.columns(2)
+        with col_dl:
+            # 仅当已生成短篇时提供下载
+            md_text = None
+            if st.session_state.dynamic_novel_text:
+                role_name = st.session_state.dynamic_role or "主人公"
+                bg = st.session_state.custom_background
+                story_text = st.session_state.dynamic_novel_text
+                md_text = (
+                    f"# 短篇故事\n\n"
+                    f"- 主人公：{role_name}\n"
+                    f"- 路径：{path_str}\n"
+                    f"- 模型：{model}\n"
+                    f"- 日期：{beijing_date_str()}\n\n"
+                    f"## 背景\n\n{bg}\n\n---\n\n{story_text}\n"
+                )
+            st.download_button(
+                "⬇️ 下载故事",
+                data=(md_text or "").encode("utf-8"),
+                file_name="story.md",
+                mime="text/markdown",
+                disabled=not bool(st.session_state.dynamic_novel_text),
+                use_container_width=True,
+            )
+        with col_rerun:
             if st.button("重新开始", use_container_width=True, key="dynamic_reset"):
                 st.session_state.dynamic_picks = []
                 st.session_state.dynamic_questions = []
